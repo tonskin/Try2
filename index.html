@@ -2,29 +2,29 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Lip Auto Focus Demo</title>
+  <title>Lip Zoom-in Centered Demo</title>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils"></script>
   <style>
-    body { margin: 0; overflow: hidden; background: #000; }
+    html, body { margin: 0; padding: 0; overflow: hidden; height: 100%; background: #000;}
+    body { width: 100vw; height: 100vh;}
     #output {
       position: absolute;
-      left: 0; top: 0;
+      top: 0; left: 0;
       width: 100vw; height: 100vh;
       object-fit: cover;
       z-index: 1;
     }
+    #input_video { display: none; }
   </style>
 </head>
 <body>
-  <video id="input_video" style="display:none;"></video>
+  <video id="input_video"></video>
   <canvas id="output"></canvas>
   <script>
     const videoElement = document.getElementById('input_video');
     const canvasElement = document.getElementById('output');
     const ctx = canvasElement.getContext('2d');
 
-    // 設定全螢幕canvas
     function resizeCanvas() {
       canvasElement.width = window.innerWidth;
       canvasElement.height = window.innerHeight;
@@ -32,7 +32,6 @@
     resizeCanvas();
     window.addEventListener('resize', resizeCanvas);
 
-    // 開啟攝影機
     async function setupCamera() {
       const stream = await navigator.mediaDevices.getUserMedia({video: {facingMode: "user"}});
       videoElement.srcObject = stream;
@@ -62,55 +61,76 @@
     }
 
     function onResults(results) {
-      ctx.save();
       ctx.clearRect(0, 0, canvasElement.width, canvasElement.height);
 
-      // 畫出整個視訊當底圖
+      if (!results.multiFaceLandmarks || results.multiFaceLandmarks.length === 0) {
+        // 畫面清空
+        return;
+      }
+      // 嘴唇參考點 index（只取外圈 landmark，更專注於嘴唇外框）
+      const lipsIndexes = [
+        61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 61
+      ];
+      const points = lipsIndexes.map(i => results.multiFaceLandmarks[0][i]);
+      // video 解析度
+      const vw = videoElement.videoWidth;
+      const vh = videoElement.videoHeight;
+
+      // 將嘴唇點座標轉成 video 實際像素
+      const pxs = points.map(pt => pt.x * vw);
+      const pys = points.map(pt => pt.y * vh);
+
+      // 嘴唇外框的矩形
+      const minX = Math.min(...pxs), maxX = Math.max(...pxs);
+      const minY = Math.min(...pys), maxY = Math.max(...pys);
+      const centerX = (minX + maxX) / 2;
+      const centerY = (minY + maxY) / 2;
+      const lipW = (maxX - minX) * 2.2; // 2.2~2.5可根據版面調整
+      const lipH = (maxY - minY) * 2.2;
+
+      // 要抓的原圖範圍（以嘴唇中心為畫面中心，裁切一個較大的嘴唇區域，避免超過來源邊界）
+      let srcX = Math.max(centerX - lipW/2, 0);
+      let srcY = Math.max(centerY - lipH/2, 0);
+      let srcW = Math.min(lipW, vw - srcX);
+      let srcH = Math.min(lipH, vh - srcY);
+
+      // 讓嘴唇區保持畫面比例
+      const canvasAR = canvasElement.width / canvasElement.height;
+      const lipAR = srcW / srcH;
+      if (lipAR > canvasAR) {
+        // 擴展高
+        const wantH = srcW / canvasAR;
+        srcY = Math.max(centerY - wantH/2, 0);
+        srcH = Math.min(wantH, vh - srcY);
+      } else {
+        // 擴展寬
+        const wantW = srcH * canvasAR;
+        srcX = Math.max(centerX - wantW/2, 0);
+        srcW = Math.min(wantW, vw - srcX);
+      }
+
+      // drawImage(來源, sx, sy, sw, sh, 目標, dx, dy, dw, dh)
       ctx.drawImage(
-        results.image,
-        0, 0, results.image.width, results.image.height,
+        videoElement,
+        srcX, srcY, srcW, srcH,
         0, 0, canvasElement.width, canvasElement.height
       );
 
-      if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
-        // 嘴唇範圍 landmark index
-        const lipsIndexes = [
-          // 上唇
-          61,185,40,39,37,0,267,269,270,409,291,
-          // 下唇
-          146,91,181,84,17,314,405,321,375,291
-        ];
-        const points = lipsIndexes.map(i => results.multiFaceLandmarks[0][i]);
-        // canvas 寬高轉換
-        const pxs = points.map(pt => pt.x * canvasElement.width);
-        const pys = points.map(pt => pt.y * canvasElement.height);
-        const minX = Math.min(...pxs), maxX = Math.max(...pxs);
-        const minY = Math.min(...pys), maxY = Math.max(...pys);
-
-        // 擷取嘴唇作為中心視窗（例如畫面放大到只顯示嘴唇區域，可自己調整寬高和縮放比例）
-        const lipBoxW = maxX - minX;
-        const lipBoxH = maxY - minY;
-        // 提供一個範例：只顯示嘴唇為中心的範圍（可優化）
-        // ctx.drawImage(results.image, ...原圖座標, ...canvas區域)
-        /*
-        ctx.drawImage(
-          results.image,
-          minX / canvasElement.width * results.image.width,
-          minY / canvasElement.height * results.image.height,
-          lipBoxW / canvasElement.width * results.image.width,
-          lipBoxH / canvasElement.height * results.image.height,
-          0, 0, canvasElement.width, canvasElement.height
-        );
-        */
-
-        // 嘴唇紅框
-        ctx.strokeStyle = "red";
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.rect(minX, minY, lipBoxW, lipBoxH);
-        ctx.stroke();
-      }
+      // 可視化嘴唇紅框（可註解掉）
+      /*
+      ctx.save();
+      ctx.strokeStyle = "red";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.rect(
+        (centerX - lipW/2 - srcX) * (canvasElement.width / srcW),
+        (centerY - lipH/2 - srcY) * (canvasElement.height / srcH),
+        lipW * (canvasElement.width / srcW),
+        lipH * (canvasElement.height / srcH)
+      );
+      ctx.stroke();
       ctx.restore();
+      */
     }
 
     main();
